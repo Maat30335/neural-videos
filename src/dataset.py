@@ -11,13 +11,15 @@ from typing import Optional, Tuple, Union
 class VideoDataset(Dataset):
     """Dataset that loads a video and provides coordinate-RGB training pairs.
     
+    Pre-generates all samples as tensors for maximum GPU efficiency.
+    
     For each sample, returns:
     - coords: (x, y, t) normalized to [-1, 1]
     - rgb: RGB values normalized to [0, 1]
     
     Args:
         video_path: Path to video file
-        num_samples: Number of random samples per epoch (if None, uses all pixels)
+        num_samples: Number of random samples per epoch (if None, uses 10M or total pixels)
         frame_step: Sample every Nth frame (for faster training on long videos)
         max_frames: Maximum number of frames to load (None for all)
     """
@@ -40,11 +42,18 @@ class VideoDataset(Dataset):
         # Total pixels in video
         self.total_pixels = self.num_frames * self.height * self.width
         
-        # Number of samples per epoch
-        self.num_samples = num_samples if num_samples else self.total_pixels
+        # Number of samples per epoch (default to 10M or total pixels, whichever is smaller)
+        if num_samples is None:
+            self.num_samples = min(10_000_000, self.total_pixels)
+        else:
+            self.num_samples = min(num_samples, self.total_pixels)
         
         # Pre-compute normalized coordinate grids
         self._setup_coordinates()
+        
+        # Pre-generate all samples as tensors
+        print(f"Pre-generating {self.num_samples:,} samples...")
+        self._generate_samples()
         
         print(f"Loaded video: {self.width}x{self.height}, {self.num_frames} frames @ {self.fps:.1f} fps")
         print(f"Total pixels: {self.total_pixels:,}")
@@ -97,30 +106,37 @@ class VideoDataset(Dataset):
         else:
             self.t_coords = np.array([0.0], dtype=np.float32)
     
+    def _generate_samples(self):
+        """Pre-generate all coordinate-RGB pairs as tensors."""
+        # Random indices for all samples
+        t_indices = np.random.randint(0, self.num_frames, size=self.num_samples)
+        y_indices = np.random.randint(0, self.height, size=self.num_samples)
+        x_indices = np.random.randint(0, self.width, size=self.num_samples)
+        
+        # Build coordinate tensor (N, 3)
+        coords = np.stack([
+            self.x_coords[x_indices],
+            self.y_coords[y_indices],
+            self.t_coords[t_indices]
+        ], axis=-1)
+        
+        # Build RGB tensor (N, 3) using advanced indexing
+        rgb = self.frames[t_indices, y_indices, x_indices]
+        
+        # Convert to tensors
+        self.all_coords = torch.from_numpy(coords)
+        self.all_rgb = torch.from_numpy(rgb)
+    
+    def shuffle_samples(self):
+        """Reshuffle samples for a new epoch. Call this at the start of each epoch."""
+        self._generate_samples()
+    
     def __len__(self) -> int:
         return self.num_samples
     
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Get a random coordinate-RGB pair."""
-        # Random frame, y, x indices
-        t_idx = np.random.randint(0, self.num_frames)
-        y_idx = np.random.randint(0, self.height)
-        x_idx = np.random.randint(0, self.width)
-        
-        # Get coordinates
-        coords = torch.tensor([
-            self.x_coords[x_idx],
-            self.y_coords[y_idx],
-            self.t_coords[t_idx]
-        ], dtype=torch.float32)
-        
-        # Get RGB value
-        rgb = torch.tensor(
-            self.frames[t_idx, y_idx, x_idx],
-            dtype=torch.float32
-        )
-        
-        return coords, rgb
+        """Get a pre-computed coordinate-RGB pair."""
+        return self.all_coords[idx], self.all_rgb[idx]
     
     def get_frame_coords(self, t_idx: int) -> torch.Tensor:
         """Get all coordinates for a specific frame.

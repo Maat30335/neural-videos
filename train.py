@@ -209,6 +209,9 @@ def main():
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
+        # Reshuffle samples for fresh random sampling each epoch
+        dataset.shuffle_samples()
+        
         # Train
         loss = train_epoch(model, dataloader, optimizer, device)
         metrics['losses'].append(loss)
