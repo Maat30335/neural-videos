@@ -108,10 +108,18 @@ class VideoDataset(Dataset):
     
     def _generate_samples(self):
         """Pre-generate all coordinate-RGB pairs as tensors."""
-        # Random indices for all samples
-        t_indices = np.random.randint(0, self.num_frames, size=self.num_samples)
-        y_indices = np.random.randint(0, self.height, size=self.num_samples)
-        x_indices = np.random.randint(0, self.width, size=self.num_samples)
+        # Flatten frames for fast 1D indexing: (T, H, W, 3) -> (T*H*W, 3)
+        if not hasattr(self, '_flat_frames'):
+            self._flat_frames = self.frames.reshape(-1, 3)
+        
+        # Random flat indices (single 1D index instead of 3 separate indices)
+        flat_indices = np.random.randint(0, self.total_pixels, size=self.num_samples)
+        
+        # Convert flat indices back to (t, y, x) for coordinate lookup
+        t_indices = flat_indices // (self.height * self.width)
+        remainder = flat_indices % (self.height * self.width)
+        y_indices = remainder // self.width
+        x_indices = remainder % self.width
         
         # Build coordinate tensor (N, 3)
         coords = np.stack([
@@ -120,8 +128,8 @@ class VideoDataset(Dataset):
             self.t_coords[t_indices]
         ], axis=-1)
         
-        # Build RGB tensor (N, 3) using advanced indexing
-        rgb = self.frames[t_indices, y_indices, x_indices]
+        # Fast 1D indexing on flattened array
+        rgb = self._flat_frames[flat_indices]
         
         # Convert to tensors
         self.all_coords = torch.from_numpy(coords)
