@@ -51,7 +51,15 @@ class VideoDataset(Dataset):
         # Pre-compute normalized coordinate grids
         self._setup_coordinates()
         
-        # Pre-generate all samples as tensors
+        # Convert frames to torch tensor for GPU indexing
+        self._frames_tensor = torch.from_numpy(self.frames.reshape(-1, 3))
+        
+        # Convert coordinate arrays to tensors
+        self._x_coords_tensor = torch.from_numpy(self.x_coords)
+        self._y_coords_tensor = torch.from_numpy(self.y_coords)
+        self._t_coords_tensor = torch.from_numpy(self.t_coords)
+        
+        # Pre-generate all samples as tensors (on CPU initially)
         print(f"Pre-generating {self.num_samples:,} samples...")
         self._generate_samples()
         
@@ -106,38 +114,56 @@ class VideoDataset(Dataset):
         else:
             self.t_coords = np.array([0.0], dtype=np.float32)
     
-    def _generate_samples(self):
-        """Pre-generate all coordinate-RGB pairs as tensors."""
-        # Flatten frames for fast 1D indexing: (T, H, W, 3) -> (T*H*W, 3)
-        if not hasattr(self, '_flat_frames'):
-            self._flat_frames = self.frames.reshape(-1, 3)
+    def _generate_samples(self, device: Optional[torch.device] = None):
+        """Pre-generate all coordinate-RGB pairs as tensors.
         
-        # Random flat indices (single 1D index instead of 3 separate indices)
-        flat_indices = np.random.randint(0, self.total_pixels, size=self.num_samples)
+        Args:
+            device: Device to generate samples on (GPU for faster generation)
+        """
+        if device is None:
+            device = torch.device('cpu')
+        
+        # Move frame data to device for fast indexing
+        frames_tensor = self._frames_tensor.to(device)
+        x_coords = self._x_coords_tensor.to(device)
+        y_coords = self._y_coords_tensor.to(device)
+        t_coords = self._t_coords_tensor.to(device)
+        
+        # Random flat indices using PyTorch (GPU-accelerated)
+        flat_indices = torch.randint(
+            0, self.total_pixels, (self.num_samples,), 
+            device=device, dtype=torch.long
+        )
         
         # Convert flat indices back to (t, y, x) for coordinate lookup
-        t_indices = flat_indices // (self.height * self.width)
-        remainder = flat_indices % (self.height * self.width)
+        hw = self.height * self.width
+        t_indices = flat_indices // hw
+        remainder = flat_indices % hw
         y_indices = remainder // self.width
         x_indices = remainder % self.width
         
-        # Build coordinate tensor (N, 3)
-        coords = np.stack([
-            self.x_coords[x_indices],
-            self.y_coords[y_indices],
-            self.t_coords[t_indices]
-        ], axis=-1)
+        # Build coordinate tensor (N, 3) using GPU indexing
+        self.all_coords = torch.stack([
+            x_coords[x_indices],
+            y_coords[y_indices],
+            t_coords[t_indices]
+        ], dim=-1)
         
-        # Fast 1D indexing on flattened array
-        rgb = self._flat_frames[flat_indices]
+        # Fast 1D indexing on flattened array (GPU)
+        self.all_rgb = frames_tensor[flat_indices]
         
-        # Convert to tensors
-        self.all_coords = torch.from_numpy(coords)
-        self.all_rgb = torch.from_numpy(rgb)
+        # Move back to CPU for DataLoader compatibility
+        if device.type != 'cpu':
+            self.all_coords = self.all_coords.cpu()
+            self.all_rgb = self.all_rgb.cpu()
     
-    def shuffle_samples(self):
-        """Reshuffle samples for a new epoch. Call this at the start of each epoch."""
-        self._generate_samples()
+    def shuffle_samples(self, device: Optional[torch.device] = None):
+        """Reshuffle samples for a new epoch using GPU acceleration.
+        
+        Args:
+            device: Device to use for sample generation (GPU recommended)
+        """
+        self._generate_samples(device)
     
     def __len__(self) -> int:
         return self.num_samples

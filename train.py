@@ -209,8 +209,8 @@ def main():
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
-        # Reshuffle samples for fresh random sampling each epoch
-        dataset.shuffle_samples()
+        # Reshuffle samples for fresh random sampling each epoch (GPU-accelerated)
+        dataset.shuffle_samples(device)
         
         # Train
         loss = train_epoch(model, dataloader, optimizer, device)
