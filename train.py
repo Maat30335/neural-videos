@@ -12,7 +12,6 @@ import argparse
 import json
 import torch
 import torch.optim as optim
-from torch.utils.data import DataLoader
 from pathlib import Path
 from tqdm import tqdm
 import time
@@ -41,13 +40,17 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=1000, help="Number of training epochs")
     parser.add_argument("--batch_size", type=int, default=65536, help="Batch size (pixels per batch)")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")
-    parser.add_argument("--samples_per_epoch", type=int, default=None, 
-                        help="Samples per epoch (default: all pixels)")
+    parser.add_argument("--batches_per_epoch", type=int, default=None, 
+                        help="Batches per epoch (default: total_pixels / batch_size)")
     
     # Checkpointing
     parser.add_argument("--save_every", type=int, default=100, help="Save checkpoint every N epochs")
     parser.add_argument("--vis_every", type=int, default=50, help="Visualize every N epochs")
     parser.add_argument("--resume", type=str, default=None, help="Resume from checkpoint")
+    
+    # Performance
+    parser.add_argument("--gpu_data", action="store_true", 
+                        help="Store video data on GPU (faster but uses more VRAM)")
     
     # Misc
     parser.add_argument("--test_run", action="store_true", help="Quick test run (1 epoch, few samples)")
@@ -69,17 +72,23 @@ def get_device(device_arg: str = None) -> torch.device:
         return torch.device("cpu")
 
 
-def train_epoch(model, dataloader, optimizer, device):
-    """Train for one epoch."""
+def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool):
+    """Train for one epoch using direct batch sampling.
+    
+    This bypasses DataLoader entirely for maximum efficiency when
+    data is already in memory (or on GPU).
+    """
     model.train()
     total_loss = 0.0
     num_batches = 0
     
-    for coords, rgb in dataloader:
-        coords = coords.to(device)
-        rgb = rgb.to(device)
+    for coords, rgb in dataset:
+        # Transfer to device if not already there (for CPU sampling path)
+        if not use_gpu_data:
+            coords = coords.to(device, non_blocking=True)
+            rgb = rgb.to(device, non_blocking=True)
         
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)  # Slightly faster than zero_grad()
         
         pred = model(coords)
         loss = mse_loss(pred, rgb)
@@ -106,8 +115,8 @@ def evaluate(model, dataset, device):
     with torch.no_grad():
         for t_idx in frame_indices:
             # Get ground truth
-            coords = dataset.get_frame_coords(t_idx).to(device)
-            target = dataset.get_frame_rgb(t_idx).to(device)
+            coords = dataset.get_frame_coords(t_idx).to(device, non_blocking=True)
+            target = dataset.get_frame_rgb(t_idx).to(device, non_blocking=True)
             
             # Predict
             pred = model(coords)
@@ -135,7 +144,7 @@ def main():
     # Quick test mode
     if args.test_run:
         args.epochs = 1
-        args.samples_per_epoch = args.batch_size * 5
+        args.batches_per_epoch = 5
         args.save_every = 1
         args.vis_every = 1
     
@@ -143,24 +152,24 @@ def main():
     device = get_device(args.device)
     print(f"Using device: {device}")
     
+    # Determine if we should use GPU data storage
+    use_gpu_data = args.gpu_data and device.type == "cuda"
+    if args.gpu_data and device.type != "cuda":
+        print("Warning: --gpu_data only works with CUDA devices, ignoring flag")
+        use_gpu_data = False
+    
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Load dataset
+    # Load dataset with new optimized VideoDataset
     print(f"\nLoading video: {args.video}")
     dataset = VideoDataset(
         args.video,
-        num_samples=args.samples_per_epoch,
-        frame_step=args.frame_step,
-        max_frames=args.max_frames
-    )
-    
-    dataloader = DataLoader(
-        dataset,
         batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=0,  # Video data is already in memory
-        pin_memory=True if device.type == "cuda" else False
+        num_batches_per_epoch=args.batches_per_epoch,
+        frame_step=args.frame_step,
+        max_frames=args.max_frames,
+        device=device if use_gpu_data else None
     )
     
     # Create model
@@ -197,6 +206,7 @@ def main():
     config['device'] = str(device)
     config['frame_shape'] = dataset.frame_shape
     config['num_frames'] = dataset.num_frames
+    config['gpu_data'] = use_gpu_data
     
     with open(output_dir / 'config.json', 'w') as f:
         json.dump(config, f, indent=2)
@@ -204,13 +214,15 @@ def main():
     # Training loop
     print(f"\nTraining for {args.epochs} epochs...")
     print(f"Batch size: {args.batch_size:,} pixels")
+    print(f"Batches per epoch: {len(dataset):,}")
+    print(f"GPU data storage: {'enabled' if use_gpu_data else 'disabled'}")
     print("-" * 50)
     
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
         # Train
-        loss = train_epoch(model, dataloader, optimizer, device)
+        loss = train_epoch(model, dataset, optimizer, device, use_gpu_data)
         metrics['losses'].append(loss)
         
         # Evaluate periodically
@@ -230,7 +242,7 @@ def main():
                     dataset.width,
                     device
                 )
-                original = torch.tensor(dataset.get_frame_image(frame_idx))
+                original = torch.from_numpy(dataset.get_frame_image(frame_idx))
                 
                 save_image(reconstructed, output_dir / f"recon_epoch_{epoch + 1:04d}.png")
         
@@ -266,17 +278,17 @@ def main():
                 dataset.width,
                 device
             )
-            original = torch.tensor(dataset.get_frame_image(t_idx))
+            original = torch.from_numpy(dataset.get_frame_image(t_idx))
             
             frame_psnr = psnr(
-                reconstructed.flatten(),
+                reconstructed.flatten().cpu(),
                 original.flatten()
             ).item()
             
             print(f"  Frame {t_idx}: PSNR = {frame_psnr:.2f} dB")
             
             visualize_comparison(
-                original, reconstructed,
+                original, reconstructed.cpu(),
                 f"Frame {t_idx} - PSNR: {frame_psnr:.2f} dB",
                 output_dir / f"comparison_frame_{t_idx:04d}.png"
             )
