@@ -72,7 +72,7 @@ def get_device(device_arg: str = None) -> torch.device:
         return torch.device("cpu")
 
 
-def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool):
+def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool, epoch: int):
     """Train for one epoch using direct batch sampling.
     
     This bypasses DataLoader entirely for maximum efficiency when
@@ -82,7 +82,17 @@ def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool):
     total_loss = 0.0
     num_batches = 0
     
-    for coords, rgb in dataset:
+    # Progress bar with batch-level updates
+    pbar = tqdm(
+        dataset,
+        desc=f"Epoch {epoch + 1:4d}",
+        total=len(dataset),
+        unit="batch",
+        leave=False,
+        dynamic_ncols=True
+    )
+    
+    for coords, rgb in pbar:
         # Transfer to device if not already there (for CPU sampling path)
         if not use_gpu_data:
             coords = coords.to(device, non_blocking=True)
@@ -98,7 +108,11 @@ def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool):
         
         total_loss += loss.item()
         num_batches += 1
+        
+        # Update progress bar with current loss
+        pbar.set_postfix(loss=f"{loss.item():.5f}", refresh=False)
     
+    pbar.close()
     return total_loss / num_batches
 
 
@@ -222,7 +236,7 @@ def main():
     
     for epoch in range(start_epoch, args.epochs):
         # Train
-        loss = train_epoch(model, dataset, optimizer, device, use_gpu_data)
+        loss = train_epoch(model, dataset, optimizer, device, use_gpu_data, epoch)
         metrics['losses'].append(loss)
         
         # Evaluate periodically
