@@ -10,6 +10,7 @@ For a quick test:
 
 import argparse
 import json
+import sys
 import torch
 import torch.optim as optim
 from pathlib import Path
@@ -51,6 +52,8 @@ def parse_args():
     # Performance
     parser.add_argument("--gpu_data", action="store_true", 
                         help="Store video data on GPU (faster but uses more VRAM)")
+    parser.add_argument("--no_progress", action="store_true",
+                        help="Disable progress bars (auto-detected for non-TTY output)")
     
     # Misc
     parser.add_argument("--test_run", action="store_true", help="Quick test run (1 epoch, few samples)")
@@ -72,7 +75,7 @@ def get_device(device_arg: str = None) -> torch.device:
         return torch.device("cpu")
 
 
-def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool, epoch: int):
+def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool, epoch: int, show_progress: bool = True):
     """Train for one epoch using direct batch sampling.
     
     This bypasses DataLoader entirely for maximum efficiency when
@@ -82,17 +85,21 @@ def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool, epoch: in
     total_loss = 0.0
     num_batches = 0
     
-    # Progress bar with batch-level updates
-    pbar = tqdm(
-        dataset,
-        desc=f"Epoch {epoch + 1:4d}",
-        total=len(dataset),
-        unit="batch",
-        leave=False,
-        dynamic_ncols=True
-    )
+    # Progress bar with batch-level updates (disabled for file output)
+    iterator = dataset
+    pbar = None
+    if show_progress:
+        pbar = tqdm(
+            dataset,
+            desc=f"Epoch {epoch + 1:4d}",
+            total=len(dataset),
+            unit="batch",
+            leave=False,
+            dynamic_ncols=True
+        )
+        iterator = pbar
     
-    for coords, rgb in pbar:
+    for coords, rgb in iterator:
         # Transfer to device if not already there (for CPU sampling path)
         if not use_gpu_data:
             coords = coords.to(device, non_blocking=True)
@@ -110,9 +117,11 @@ def train_epoch(model, dataset, optimizer, device, use_gpu_data: bool, epoch: in
         num_batches += 1
         
         # Update progress bar with current loss
-        pbar.set_postfix(loss=f"{loss.item():.5f}", refresh=False)
+        if pbar is not None:
+            pbar.set_postfix(loss=f"{loss.item():.5f}", refresh=False)
     
-    pbar.close()
+    if pbar is not None:
+        pbar.close()
     return total_loss / num_batches
 
 
@@ -226,25 +235,29 @@ def main():
         json.dump(config, f, indent=2)
     
     # Training loop
+    # Auto-detect if we should show progress bars (disable for file output like nohup)
+    show_progress = sys.stdout.isatty() and not args.no_progress
+    
     print(f"\nTraining for {args.epochs} epochs...")
     print(f"Batch size: {args.batch_size:,} pixels")
     print(f"Batches per epoch: {len(dataset):,}")
     print(f"GPU data storage: {'enabled' if use_gpu_data else 'disabled'}")
+    print(f"Progress bars: {'enabled' if show_progress else 'disabled (file output detected)'}")
     print("-" * 50)
     
     start_time = time.time()
     
     for epoch in range(start_epoch, args.epochs):
         # Train
-        loss = train_epoch(model, dataset, optimizer, device, use_gpu_data, epoch)
+        loss = train_epoch(model, dataset, optimizer, device, use_gpu_data, epoch, show_progress)
         metrics['losses'].append(loss)
         
         # Evaluate periodically
+        elapsed = time.time() - start_time
         if (epoch + 1) % args.vis_every == 0 or epoch == 0:
             avg_psnr = evaluate(model, dataset, device)
             metrics['psnrs'].append(avg_psnr)
             
-            elapsed = time.time() - start_time
             print(f"Epoch {epoch + 1:4d} | Loss: {loss:.6f} | PSNR: {avg_psnr:.2f} dB | Time: {elapsed:.1f}s")
             
             # Save sample reconstruction
@@ -259,6 +272,9 @@ def main():
                 original = torch.from_numpy(dataset.get_frame_image(frame_idx))
                 
                 save_image(reconstructed, output_dir / f"recon_epoch_{epoch + 1:04d}.png")
+        else:
+            # Print progress without evaluation
+            print(f"Epoch {epoch + 1:4d} | Loss: {loss:.6f} | Time: {elapsed:.1f}s")
         
         # Save checkpoint
         if (epoch + 1) % args.save_every == 0:
