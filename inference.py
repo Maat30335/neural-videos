@@ -134,7 +134,7 @@ def generate_frame_batched(
     
     for i in range(0, num_pixels, batch_pixels):
         batch_coords = coords[i:i + batch_pixels].to(device)
-        with torch.no_grad():
+        with torch.inference_mode():
             batch_rgb = model(batch_coords)
         rgb_values.append(batch_rgb.cpu())
     
@@ -149,6 +149,11 @@ def main():
     # Setup
     device = get_device(args.device)
     print(f"Using device: {device}")
+    
+    # Enable TF32 for Ampere GPUs (4090, A100, etc.) - faster matrix ops
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
     
     checkpoint_path = Path(args.checkpoint)
     
