@@ -19,6 +19,30 @@ After training, you can query the network at **any coordinate**, including:
 - Times between original frames → **frame interpolation**
 - Higher spatial resolution → **super-resolution**
 
+## Sample Results
+
+Here are example outputs from training on a short video clip:
+
+### Training Progress
+
+The model learns to reconstruct the video over training epochs, with loss decreasing and PSNR (reconstruction quality) improving:
+
+![Training Progress](sample_outputs/training_progress.png)
+
+### Frame Comparison
+
+Side-by-side comparison of original vs. reconstructed frames:
+
+![Frame Comparison](sample_outputs/comparison_frame_0150.png)
+
+### Reconstruction Quality Over Time
+
+The model progressively captures more detail as training progresses:
+
+| Epoch 1 | Epoch 1000 |
+|---------|------------|
+| ![Epoch 1](sample_outputs/recon_epoch_0001.png) | ![Epoch 1000](sample_outputs/recon_epoch_1000.png) |
+
 ## Installation
 
 ```bash

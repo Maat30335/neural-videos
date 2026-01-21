@@ -1,0 +1,25 @@
+{
+  "video": "bunny.mp4",
+  "output_dir": "outputs",
+  "max_frames": null,
+  "frame_step": 1,
+  "hidden_features": 1024,
+  "hidden_layers": 3,
+  "omega_0": 30.0,
+  "epochs": 1000,
+  "batch_size": 262144,
+  "lr": 0.0001,
+  "batches_per_epoch": 150,
+  "save_every": 100,
+  "vis_every": 25,
+  "resume": null,
+  "gpu_data": true,
+  "no_progress": false,
+  "test_run": false,
+  "device": "cuda",
+  "frame_shape": [
+    720,
+    1280
+  ],
+  "num_frames": 300
+}
